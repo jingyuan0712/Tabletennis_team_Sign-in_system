@@ -1,0 +1,70 @@
+name: table-tennis-today
+x-app: &app
+  image: table-tennis-today:local
+  build: .
+  restart: unless-stopped
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  volumes:
+    - team-data:/data
+  environment: &env
+    NODE_ENV: production
+    HOST: 0.0.0.0
+    PORT: 3001
+    DATABASE_PATH: /data/team.sqlite
+    PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to your HTTPS origin in .env}
+    RATE_LIMIT_SECRET: ${RATE_LIMIT_SECRET:?Set a random RATE_LIMIT_SECRET in .env}
+    TRUST_PROXY: "true"
+  logging:
+    driver: local
+    options:
+      max-size: "1m"
+      max-file: "2"
+services:
+  app:
+    <<: *app
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+  scheduler:
+    <<: *app
+    command: [node, dist-server/server/scheduler.js]
+    depends_on:
+      app:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "const fs=require('node:fs');try{const t=Number(fs.readFileSync('/data/team.sqlite.scheduler-heartbeat','utf8'));process.exit(Date.now()-t<420000?0:1)}catch{process.exit(1)}"]
+      interval: 60s
+      timeout: 5s
+      start_period: 15s
+      retries: 2
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    logging:
+      driver: local
+      options:
+        max-size: "1m"
+        max-file: "2"
+volumes:
+  team-data:
+  caddy-data:
+  caddy-config:

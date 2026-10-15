@@ -1,0 +1,8 @@
+{$DOMAIN} {
+	# No access-log directive, analytics, or debug logging.
+	reverse_proxy app:3001 {
+		# Overwrite the client-supplied value; app is not exposed on the host.
+		header_up X-Real-IP {remote_host}
+		header_up -X-Forwarded-For
+	}
+}

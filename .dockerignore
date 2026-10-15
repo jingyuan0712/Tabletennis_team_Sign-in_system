@@ -1,0 +1,16 @@
+node_modules
+.git
+.env
+.env.*
+data
+.test-data
+dist
+dist-server
+test-results
+playwright-report
+*.log
+.wrangler
+.dev.vars
+.dev.vars.*
+wrangler.deploy.json
+.cloudflare-build

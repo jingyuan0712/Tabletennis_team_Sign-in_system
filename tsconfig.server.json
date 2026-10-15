@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "ES2023", "module": "NodeNext", "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM"], "types": ["node"],
+    "strict": true, "skipLibCheck": true, "outDir": "dist-server",
+    "rootDir": ".", "esModuleInterop": true
+  },
+  "include": ["server", "shared"]
+}

@@ -1,0 +1,59 @@
+name: Deploy GitHub Pages and Cloudflare
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+jobs:
+  build-and-api:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:cloudflare
+      - name: Prepare Cloudflare configuration
+        run: node scripts/configure-cloudflare.mjs
+        env:
+          CLOUDFLARE_DATABASE_ID: ${{ vars.CLOUDFLARE_DATABASE_ID }}
+          CLOUDFLARE_API_URL: ${{ vars.CLOUDFLARE_API_URL }}
+      - name: Apply database schema, deploy API, configure secret and verify health
+        run: node scripts/deploy-cloudflare.mjs
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RATE_LIMIT_SECRET: ${{ secrets.RATE_LIMIT_SECRET }}
+          CLOUDFLARE_API_URL: ${{ vars.CLOUDFLARE_API_URL }}
+      - name: Build GitHub Pages frontend
+        run: npm run build:pages
+        env:
+          VITE_API_BASE_URL: ${{ vars.CLOUDFLARE_API_URL }}
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+  pages:
+    needs: build-and-api
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/deploy-pages@v4
+        id: deploy

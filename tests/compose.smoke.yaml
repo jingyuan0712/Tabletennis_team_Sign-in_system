@@ -1,0 +1,9 @@
+services:
+  app:
+    image: table-tennis-today:verification
+    healthcheck:
+      interval: 2s
+  scheduler:
+    image: table-tennis-today:verification
+    healthcheck:
+      interval: 2s

@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tabletennis-team-api",
+  "main": "cloudflare/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": { "ALLOWED_ORIGIN": "https://jingyuan0712.github.io" },
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "tabletennis-team",
+    "database_id": "00000000-0000-0000-0000-000000000000",
+    "migrations_dir": "migrations"
+  }],
+  "triggers": { "crons": ["0 16 * * *", "5,20,35,50 * * * *"] },
+  "observability": { "enabled": false },
+  "send_metrics": false
+}
