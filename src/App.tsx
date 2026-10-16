@@ -183,7 +183,6 @@ export function App() {
     </header>
     <main>
       <section className="intro" aria-labelledby="title">
-        <p className="eyebrow">STAY IN THE LOOP · 讓隊友知道</p>
         <div className="title-row"><h1 id="title">桌球隊出席登記<span className="title-dot">.</span></h1><span className="today-date">{today ? dateLabel(today.day) : '正在取得台灣日期…'}</span></div>
         <p className="intro-copy">請假或遲到才需填寫，<strong>正常出席不用登記。</strong></p>
         <p className="reset-note"><span aria-hidden="true">◷</span> 僅登記今日狀態，每日 00:00（台灣時間）清除。</p>
