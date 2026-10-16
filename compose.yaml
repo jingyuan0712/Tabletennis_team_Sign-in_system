@@ -17,6 +17,8 @@ x-app: &app
     PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN to your HTTPS origin in .env}
     RATE_LIMIT_SECRET: ${RATE_LIMIT_SECRET:?Set a random RATE_LIMIT_SECRET in .env}
     TRUST_PROXY: "true"
+    ADMIN_USERNAME: ${ADMIN_USERNAME:-jingyuan}
+    ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
   logging:
     driver: local
     options:

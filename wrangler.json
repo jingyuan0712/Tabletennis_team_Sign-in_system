@@ -5,7 +5,7 @@
   "compatibility_date": "2026-10-01",
   "workers_dev": true,
   "preview_urls": false,
-  "vars": { "ALLOWED_ORIGIN": "https://jingyuan0712.github.io" },
+  "vars": { "ALLOWED_ORIGIN": "https://jingyuan0712.github.io", "ADMIN_USERNAME": "jingyuan" },
   "d1_databases": [{
     "binding": "DB",
     "database_name": "tabletennis-team",

@@ -5,10 +5,12 @@ import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
 import { nextReset, taipeiDay, validateInput } from '../shared/model.js';
 import { PUBLIC_COLUMNS, todayEntries } from './db.js';
+import { AdminError, loginAdmin, logoutAdmin, verifyAdmin, type AdminStore } from '../shared/admin-auth.js';
 
 export type AppOptions = {
   origin: string; secret: string; production: boolean; trustProxy: boolean;
   staticDir: string; now?: () => Date;
+  adminUsername?: string; adminPassword?: string;
 };
 class HttpError extends Error {
   constructor(public status: number, public code: string, message: string) { super(message); }
@@ -49,6 +51,14 @@ function json(res: ServerResponse, status: number, data?: unknown) {
 }
 
 export function createApp(db: DatabaseSync, options: AppOptions) {
+  const adminConfig = { username: options.adminUsername || 'jingyuan', password: options.adminPassword || '', secret: options.secret };
+  const adminStore: AdminStore = {
+    async consume(key, expires) { return (db.prepare('INSERT INTO rate_limits(key,hits,expires_at) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET hits=hits+1 RETURNING hits').get(key, expires) as { hits: number }).hits; },
+    async create(hash, fingerprint, expires) { db.prepare('INSERT INTO admin_sessions(token_hash,fingerprint,expires_at) VALUES (?,?,?)').run(hash, fingerprint, expires); },
+    async find(hash) { return db.prepare('SELECT fingerprint,expires_at FROM admin_sessions WHERE token_hash=?').get(hash) as { fingerprint: string; expires_at: number } | undefined; },
+    async remove(hash) { db.prepare('DELETE FROM admin_sessions WHERE token_hash=?').run(hash); },
+  };
+  const peer = (req: IncomingMessage) => options.trustProxy && typeof req.headers['x-real-ip'] === 'string' ? req.headers['x-real-ip'] : req.socket.remoteAddress || 'unknown';
   function limited(req: IncomingMessage, now: Date, write: boolean) {
     // Only trust a proxy which overwrites X-Real-IP; never trust X-Forwarded-For.
     const peer = options.trustProxy && typeof req.headers['x-real-ip'] === 'string'
@@ -96,6 +106,38 @@ export function createApp(db: DatabaseSync, options: AppOptions) {
       const write = req.method !== 'GET';
       if (write && req.headers.origin !== options.origin) throw new HttpError(403, 'ORIGIN', '請從網站頁面操作。');
       limited(req, receivedAt, write);
+      if (url.pathname.startsWith('/api/admin/')) {
+        if (url.pathname === '/api/admin/session') {
+          if (req.method === 'POST') { json(res, 200, await loginAdmin(adminConfig, adminStore, peer(req), await readJson(req), receivedAt)); return; }
+          if (req.method === 'GET') { json(res, 200, await verifyAdmin(adminConfig, adminStore, req.headers.authorization, receivedAt)); return; }
+          if (req.method === 'DELETE') { await logoutAdmin(adminStore, req.headers.authorization); json(res, 204); return; }
+          throw new HttpError(405, 'METHOD', '不支援此操作。');
+        }
+        await verifyAdmin(adminConfig, adminStore, req.headers.authorization, receivedAt);
+        const target = /^\/api\/admin\/entries\/([^/]+)$/.exec(url.pathname);
+        if (!target || !idPattern.test(target[1])) throw new HttpError(404, 'NOT_FOUND', '找不到此登記。');
+        const id = target[1];
+        if (req.method === 'DELETE') {
+          const deleted = db.prepare('DELETE FROM entries WHERE id=? AND day=?').run(id, day);
+          if (!deleted.changes) throw new HttpError(404, 'NOT_FOUND', '登記已刪除或到期。');
+          json(res, 204); return;
+        }
+        if (req.method !== 'PUT') throw new HttpError(405, 'METHOD', '不支援此操作。');
+        const data = await readJson(req);
+        const parsed = validateInput(data);
+        if ('error' in parsed) throw new HttpError(422, 'VALIDATION', parsed.error);
+        db.exec('BEGIN IMMEDIATE');
+        let entry;
+        try {
+          if (!db.prepare('SELECT id FROM entries WHERE id=? AND day=?').get(id, day)) throw new HttpError(404, 'NOT_FOUND', '登記已刪除或到期。');
+          const value = parsed.value;
+          if (data.confirmSameName !== true && db.prepare('SELECT id FROM entries WHERE day=? AND name=? AND id<>? LIMIT 1').get(day, value.name, id)) throw new HttpError(409, 'DUPLICATE_NAME', '今天已有完全相同姓名，請確認後儲存修改。');
+          db.prepare('UPDATE entries SET name=?,status=?,reason=?,eta=?,updated_at=? WHERE id=? AND day=?').run(value.name, value.status, value.reason, value.eta, timestamp, id, day);
+          entry = db.prepare(`SELECT ${PUBLIC_COLUMNS} FROM entries WHERE id=? AND day=?`).get(id, day);
+          db.exec('COMMIT');
+        } catch (error) { db.exec('ROLLBACK'); throw error; }
+        json(res, 200, { entry, day, serverNow: timestamp, nextResetAt: nextReset(day) }); return;
+      }
       if (url.pathname === '/api/today' && req.method === 'GET') {
         json(res, 200, { day, serverNow: timestamp, nextResetAt: nextReset(day), entries: todayEntries(db, day) }); return;
       }
@@ -142,8 +184,8 @@ export function createApp(db: DatabaseSync, options: AppOptions) {
       } catch (error) { db.exec('ROLLBACK'); throw error; }
       json(res, responseCode, result ? { entry: result, day, serverNow: timestamp, nextResetAt: nextReset(day) } : undefined);
     } catch (error) {
-      if (error instanceof HttpError) {
-        if (error.status === 429) res.setHeader('Retry-After', '600');
+      if (error instanceof HttpError || error instanceof AdminError) {
+        if (error.status === 429) res.setHeader('Retry-After', error instanceof AdminError ? '900' : '600');
         json(res, error.status, { code: error.code, message: error.message });
       } else {
         // No request bodies, identifiers, names, reasons, credentials or raw errors.

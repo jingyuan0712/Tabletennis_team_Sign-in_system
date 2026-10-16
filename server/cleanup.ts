@@ -8,6 +8,7 @@ export function cleanup(db: DatabaseSync, now = new Date()): number {
   try {
     deleted = Number(db.prepare('DELETE FROM entries WHERE day < ?').run(taipeiDay(now)).changes);
     db.prepare('DELETE FROM rate_limits WHERE expires_at <= ?').run(now.getTime());
+    db.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').run(now.getTime());
     db.exec('COMMIT');
   } catch (error) { db.exec('ROLLBACK'); throw error; }
   // Remove deleted page contents from the active WAL where readers permit it.

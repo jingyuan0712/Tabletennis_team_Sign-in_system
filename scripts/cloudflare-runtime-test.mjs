@@ -11,7 +11,8 @@ mkdirSync('.test-data', { recursive: true });
 const directory = mkdtempSync('.test-data/cloudflare-runtime-');
 const state = resolve(directory, 'state');
 const secretFile = resolve(directory, 'vars');
-writeFileSync(secretFile, 'RATE_LIMIT_SECRET=' + randomBytes(32).toString('hex') + '\n');
+const testAdminPassword = 'runtime-admin-test-only';
+writeFileSync(secretFile, 'RATE_LIMIT_SECRET=' + randomBytes(32).toString('hex') + '\nADMIN_PASSWORD=' + testAdminPassword + '\n');
 const browserMode = process.argv.includes('--browser');
 const siteRoot = resolve(directory, 'site');
 const basePath = '/Tabletennis_team_Sign-in_system/';
@@ -86,7 +87,20 @@ try {
   command(['d1', 'execute', 'DB', '--local', '--persist-to', state, '--command', "CREATE TABLE cleanup_assert(n INTEGER CHECK(n=0)); INSERT INTO cleanup_assert SELECT count(*) FROM entries WHERE day='2000-01-01'; DROP TABLE cleanup_assert;"]);
   assert.equal((await request(`/api/entries/${id}`, 'DELETE')).status, 204);
   assert.equal((await (await request('/api/today')).json()).entries.length, 0);
+  const moderated = { ...value, id: randomUUID(), name: '待管理測試' };
+  assert.equal((await request('/api/entries', 'POST', moderated)).status, 201);
+  assert.equal((await request(`/api/admin/entries/${moderated.id}`, 'DELETE')).status, 401);
+  const login = await request('/api/admin/session', 'POST', { username: 'jingyuan', password: testAdminPassword });
+  assert.equal(login.status, 200);
+  const session = await login.json();
+  const managerHeaders = { ...headers, Authorization: `Bearer ${session.token}` };
+  assert.equal((await request(`/api/admin/entries/${moderated.id}`, 'PUT', { ...moderated, reason: '管理員修正' }, managerHeaders)).status, 200);
+  assert.equal((await (await request('/api/today')).json()).entries[0].reason, '管理員修正');
+  assert.equal((await request(`/api/admin/entries/${moderated.id}`, 'DELETE', undefined, managerHeaders)).status, 204);
+  assert.equal((await request('/api/admin/session', 'DELETE', undefined, managerHeaders)).status, 204);
+  assert.equal((await request('/api/admin/session', 'GET', undefined, managerHeaders)).status, 401);
   console.log('Actual workerd/D1: CORS, create/retry, private credentials, ownership, edit/delete and scheduled physical deletion passed.');
+  console.log('Actual workerd/D1: administrator login, moderation, logout and revoked-session rejection passed.');
   if (browserMode) {
     // This isolated test builds HTTP loopback URLs directly; production Pages
     // build-pages.mjs independently enforces HTTPS for the published API origin.
@@ -121,8 +135,32 @@ try {
       await a.getByRole('button', { name: '撤回', exact: true }).click();
       await a.getByRole('button', { name: '確認撤回' }).click();
       await expect(b.getByRole('article')).toHaveCount(0, { timeout: 15_000 });
+      // A second registration belongs only to context A. Context B logs in as
+      // administrator and moderates it over the actual cross-origin API.
+      await a.getByLabel('姓名', { exact: false }).fill('管理員流程測試');
+      await a.getByRole('button', { name: '請假 今天無法出席' }).click();
+      await a.getByLabel('原因', { exact: false }).fill('測試管理員修正');
+      await a.getByRole('button', { name: '送出今日登記' }).click();
+      await expect(b.getByRole('article')).toHaveCount(1, { timeout: 15_000 });
+      await b.getByRole('button', { name: '管理員登入', exact: true }).click();
+      await b.getByLabel('管理員帳號').fill('jingyuan');
+      await b.getByLabel('管理員密碼').fill(testAdminPassword);
+      await b.getByRole('button', { name: '登入管理員', exact: true }).click();
+      await expect(b.getByRole('button', { name: '登出管理員' })).toBeVisible();
+      await b.reload();
+      await expect(b.getByRole('button', { name: '登出管理員' })).toBeVisible();
+      await b.getByRole('button', { name: '修改', exact: true }).click();
+      await b.getByLabel('原因', { exact: false }).fill('跨來源管理員已修正');
+      await b.getByRole('button', { name: '儲存修改' }).click();
+      await expect(a.getByRole('article')).toContainText('跨來源管理員已修正', { timeout: 15_000 });
+      await b.getByRole('button', { name: '刪除', exact: true }).click();
+      await b.getByRole('button', { name: '確認刪除', exact: true }).click();
+      await expect(a.getByRole('article')).toHaveCount(0, { timeout: 15_000 });
+      await b.getByRole('button', { name: '登出管理員' }).click();
+      await expect(b.getByRole('button', { name: '管理員登入', exact: true })).toBeVisible();
       assert.deepEqual(errors, []);
       console.log('Pages subpath + real cross-origin workerd/D1: two browsers, create, edit, withdraw and automatic sync passed.');
+      console.log('Pages administrator footer login, session restoration, moderation sync and logout passed.');
     } finally { await contextA.close(); await contextB.close(); await browser.close(); }
   }
 } finally {

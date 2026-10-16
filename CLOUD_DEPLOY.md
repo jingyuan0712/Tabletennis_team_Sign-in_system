@@ -67,6 +67,7 @@ Token 通常只會完整顯示一次，**直接保存到下一步的 GitHub Secr
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 的 Account ID |
 | `CLOUDFLARE_API_TOKEN` | 剛建立的 API Token |
 | `RATE_LIMIT_SECRET` | 自己產生的 64 字元隨機值 |
+| `ADMIN_PASSWORD` | 你要使用的管理員密碼（至少 8 字元）；只填 Secret，不寫進程式碼 |
 
 產生 `RATE_LIMIT_SECRET`：在電腦終端機執行以下命令，將結果直接填入 GitHub Secret，不用貼回聊天。
 
@@ -102,6 +103,20 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 5. 以正確的 repository 子路徑與 API URL 建置前端，再發布 GitHub Pages。
 
 Token／Secret 不會放入命令參數、前端或產物。第一次 Worker 部署到 Secret 設定完成之間，API 會短暫回傳「尚未完成設定」，不會以無保護狀態接受資料。workflow 不使用 GitHub Actions 定時任務刪除資料；每日清除由 Cloudflare Cron 在無訪客時執行。
+
+### 已上線專案新增管理員功能
+
+在原本的 repository Secrets 額外新增 `ADMIN_PASSWORD`，填入自己指定的管理員密碼；不用更改原本 3 個 Secrets 與 2 個 Variables。帳號預設是 `jingyuan`，位於伺服器設定 `ADMIN_USERNAME`，不需額外新增 GitHub variable。
+
+然後將新版程式推送到 `main`，workflow 會自動套用 `002_admin_sessions.sql` 並設定 Worker Secret。沒有提供密碼時，公開登記／讀取仍可使用，但管理員登入會回覆尚未設定；程式沒有內建預設密碼。若先前直接在 Cloudflare 設過同名 Secret，空白的 GitHub Secret 不會將它刪除；建議統一以 GitHub Secret 管理。
+
+使用方法：到網站最底下點「管理員登入」，輸入帳號／密碼。成功後今日所有登記會出現「修改／刪除」，修改沿用原表單，刪除須再次確認，其他裝置依原本每 10 秒機制同步。管理員不會取得或改變原填寫者的個人管理憑證。
+
+登入憑證由伺服器安全隨機產生，僅保存於目前分頁的 sessionStorage，最長 2 小時；重新整理會向後端驗證登入狀態。資料庫只保存登入憑證雜湊、憑證設定的 HMAC 指紋及到期時間，不保存管理員密碼，不新增登記歷史。登出會在伺服器撤銷該憑證；修改帳號、密碼或限流 Secret 後，舊憑證也無法通過驗證。過期 session 由現有清除排程刪除，無需另外建立排程。
+
+後端每次管理操作都檢查 session、有效期限與台灣今天日期。一般隊員的管理憑證不能呼叫管理員 API；未登入者即使知道紀錄 ID 仍無權修改他人。登入額外限制為每來源 IP 每 15 分鐘 5 次、全域每 15 分鐘 60 次，包含正確及錯誤嘗試；達到限制不影響公開讀取與一般登記的原本額度。
+
+需要更換密碼時，更新 GitHub 的 `ADMIN_PASSWORD` Secret，重新執行 deployment workflow。不要把密碼放進 Variables、`VITE_*`、`wrangler.json` 或 GitHub 檔案。Cloudflare 的 Workers Secrets 是伺服器端加密環境設定；應用程式不記錄登入帳密、session token 或原始驗證錯誤。
 
 兩個 workflows 分工：`Test` 對 PR／push 執行測試，不需要你的帳號憑證；`Deploy GitHub Pages and Cloudflare` 只對正式分支 push 或手動執行，串接真正部署。請勿把 deployment Secrets 提供給不信任的 PR。
 

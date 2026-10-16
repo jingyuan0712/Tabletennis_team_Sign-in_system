@@ -37,6 +37,8 @@ function fixture() {
     },
     ALLOWED_ORIGIN: 'https://jingyuan0712.github.io',
     RATE_LIMIT_SECRET: randomBytes(32).toString('hex'),
+    ADMIN_USERNAME: 'test-coach',
+    ADMIN_PASSWORD: 'test-only-administrator-password',
   } as unknown as Env;
   let now = new Date('2026-10-15T15:59:59.000Z');
   return {
@@ -153,5 +155,73 @@ test('Cloudflare: persistent rate limits, no original IP, body/JSON constraints,
     f.env.RATE_LIMIT_SECRET = '';
     const failed = await f.request(); assert.equal(failed.status, 503);
     assert(!await failed.text().then(t => t.includes('token_hash')));
+  } finally { f.close(); }
+});
+
+test('admin: correct login, public/owner token isolation, edit others, original ownership preserved, logout revokes', async () => {
+  const f = fixture(); const data = input(); const owner = secret();
+  try {
+    await f.request('/api/entries', 'POST', data, owner);
+    assert.equal((await f.request(`/api/admin/entries/${data.id}`, 'DELETE')).status, 401);
+    assert.equal((await f.request(`/api/admin/entries/${data.id}`, 'DELETE', undefined, owner)).status, 401);
+    assert.equal((await f.request('/api/admin/session', 'POST', { username: 'test-coach', password: 'wrong' })).status, 401);
+    const login = await f.request('/api/admin/session', 'POST', { username: 'test-coach', password: f.env.ADMIN_PASSWORD });
+    assert.equal(login.status, 200);
+    const session = await login.json() as any;
+    assert.equal(session.token.length, 43);
+    assert.equal((await f.request('/api/admin/session', 'GET', undefined, session.token)).status, 200);
+    assert.equal((await f.request(`/api/admin/entries/${data.id}`, 'PUT', { ...data, reason: ' ' }, session.token)).status, 422);
+    assert.equal((await f.request(`/api/admin/entries/${data.id}`, 'PUT', { ...data, reason: '管理員已修正', status: 'late', eta: '21:00' }, session.token)).status, 200);
+    const publicData = await (await f.request()).json() as any;
+    assert.equal(publicData.entries[0].reason, '管理員已修正');
+    assert(!JSON.stringify(publicData).includes(session.token));
+    assert(!JSON.stringify(publicData).includes('fingerprint'));
+    assert(!JSON.stringify(f.db.prepare('SELECT * FROM admin_sessions').all()).includes(session.token));
+    // An admin edit never transfers or invalidates the original submitter's token.
+    assert.equal((await f.request(`/api/entries/${data.id}`, 'PUT', { ...data, reason: '原填寫者仍可修改' }, owner)).status, 200);
+    assert.equal((await f.request('/api/admin/session', 'DELETE', undefined, session.token)).status, 204);
+    assert.equal((await f.request(`/api/admin/entries/${data.id}`, 'DELETE', undefined, session.token)).status, 401);
+    assert.equal(f.db.prepare('SELECT count(*) AS n FROM admin_sessions').get()?.n, 0);
+    const again = await (await f.request('/api/admin/session', 'POST', { username: 'test-coach', password: f.env.ADMIN_PASSWORD })).json() as any;
+    assert.equal((await f.request(`/api/admin/entries/${data.id}`, 'DELETE', undefined, again.token)).status, 204);
+    assert.equal(((await (await f.request()).json()) as any).entries.length, 0);
+  } finally { f.close(); }
+});
+
+test('admin: server expiry, password rotation, cross-origin rejection and no access to yesterday records', async () => {
+  const f = fixture(); const data = input();
+  try {
+    await f.request('/api/entries', 'POST', data, secret());
+    const login = await (await f.request('/api/admin/session', 'POST', { username: 'test-coach', password: f.env.ADMIN_PASSWORD })).json() as any;
+    assert.equal((await f.request('/api/admin/session', 'POST', { username: 'test-coach', password: f.env.ADMIN_PASSWORD }, undefined, { Origin: 'https://evil.example' })).status, 403);
+    f.advance('2026-10-15T16:00:00Z');
+    assert.equal((await f.request(`/api/admin/entries/${data.id}`, 'DELETE', undefined, login.token)).status, 404);
+    f.env.ADMIN_PASSWORD = 'new-test-only-password';
+    assert.equal((await f.request('/api/admin/session', 'GET', undefined, login.token)).status, 401);
+    f.env.ADMIN_PASSWORD = 'test-only-administrator-password';
+    f.advance('2026-10-15T18:00:00Z');
+    assert.equal((await f.request('/api/admin/session', 'GET', undefined, login.token)).status, 401);
+    await cleanupD1(f.env, new Date('2026-10-15T18:00:00Z'));
+    assert.equal(f.db.prepare('SELECT count(*) AS n FROM admin_sessions').get()?.n, 0);
+  } finally { f.close(); }
+});
+
+test('admin: isolated login rate limit, no default password, duplicate confirmation and arbitrary methods blocked', async () => {
+  const f = fixture();
+  try {
+    for (let i = 0; i < 5; i++) assert.equal((await f.request('/api/admin/session', 'POST', { username: 'wrong', password: 'wrong' })).status, 401);
+    const limited = await f.request('/api/admin/session', 'POST', { username: 'test-coach', password: f.env.ADMIN_PASSWORD });
+    assert.equal(limited.status, 429); assert.equal(limited.headers.get('Retry-After'), '900');
+    assert.equal((await f.request('/api/entries', 'POST', input(), secret())).status, 201);
+    f.advance('2026-10-15T16:15:00Z');
+    const admin = await (await f.request('/api/admin/session', 'POST', { username: 'test-coach', password: f.env.ADMIN_PASSWORD })).json() as any;
+    const one = input(randomUUID(), '隊員一'); const two = input(randomUUID(), '隊員二');
+    await f.request('/api/entries', 'POST', one, secret()); await f.request('/api/entries', 'POST', two, secret());
+    assert.equal((await f.request(`/api/admin/entries/${two.id}`, 'PUT', { ...two, name: one.name }, admin.token)).status, 409);
+    assert.equal((await f.request(`/api/admin/entries/${two.id}`, 'PUT', { ...two, name: one.name, confirmSameName: true }, admin.token)).status, 200);
+    assert.equal((await f.request(`/api/admin/entries/${one.id}`, 'POST', one, admin.token)).status, 405);
+    f.env.ADMIN_PASSWORD = '';
+    assert.equal((await f.request('/api/admin/session', 'POST', { username: 'test-coach', password: 'anything' })).status, 503);
+    assert.equal((await f.request()).status, 200);
   } finally { f.close(); }
 });

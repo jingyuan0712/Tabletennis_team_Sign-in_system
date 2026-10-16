@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { charCount, taipeiDay, validateInput, NAME_MAX, REASON_MAX, type Entry, type Status, type Today } from '../shared/model.js';
-import { ApiError, getToday, removeEntry, saveEntry } from './api.js';
+import { ApiError, adminRemoveEntry, adminSaveEntry, getToday, removeEntry, saveEntry } from './api.js';
+import { AdminPanel, useAdminSession } from './AdminPanel.js';
 import { newOwnership, readOwnership, writeOwnership, type Ownership } from './ownership.js';
 
 const initialForm = { name: '', status: '' as Status | '', reason: '', eta: '' };
@@ -8,6 +9,7 @@ const timeLabel = (value: string) => new Intl.DateTimeFormat('zh-TW', { timeZone
 const dateLabel = (day: string) => new Intl.DateTimeFormat('zh-TW', { timeZone: 'Asia/Taipei', month: 'long', day: 'numeric', weekday: 'long' }).format(new Date(`${day}T12:00:00+08:00`));
 
 export function App() {
+  const admin = useAdminSession();
   const [today, setToday] = useState<Today | null>(null);
   const [loading, setLoading] = useState(true);
   const [syncError, setSyncError] = useState('');
@@ -16,6 +18,7 @@ export function App() {
   const [owners, setOwners] = useState<Ownership[]>(readOwnership);
   const [draft, setDraft] = useState<Ownership | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  const [adminEditing, setAdminEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -36,7 +39,7 @@ export function App() {
   const changeDay = useCallback((day: string) => {
     if (dayRef.current && dayRef.current !== day) {
       setToday(previous => previous ? { ...previous, day, entries: [] } : previous);
-      setEditing(null); setDraft(null); setWithdraw(null); setDuplicate(false); setConfirmed(false);
+      setEditing(null); setAdminEditing(false); setDraft(null); setWithdraw(null); setDuplicate(false); setConfirmed(false);
       setNotice('新的一天開始了，昨日登記已到期。尚未送出的內容仍保留，可登記今天狀態。');
     }
     dayRef.current = day;
@@ -91,7 +94,13 @@ export function App() {
   }, [refresh, changeDay]);
 
   const update = (values: Partial<typeof form>) => { setForm(old => ({ ...old, ...values })); setError(''); setDuplicate(false); setConfirmed(false); };
-  const reset = () => { setEditing(null); setDraft(null); setForm(initialForm); setError(''); setDuplicate(false); setConfirmed(false); };
+  const reset = () => { setEditing(null); setAdminEditing(false); setDraft(null); setForm(initialForm); setError(''); setDuplicate(false); setConfirmed(false); };
+  useEffect(() => {
+    if (!admin.session && adminEditing) {
+      setEditing(null); setAdminEditing(false); setForm(initialForm); setError(''); setDuplicate(false); setConfirmed(false); setWithdraw(null);
+      setNotice('管理員登入已結束，已離開管理員修改模式。');
+    }
+  }, [admin.session, adminEditing]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -101,26 +110,34 @@ export function App() {
     if (duplicate && !confirmed) { setError('請先確認是否為同名隊員。'); return; }
     busyRef.current = true; setBusy(true); setError(''); setNotice('');
     try {
-      const management = editing ? owners.find(owner => owner.id === editing) : draft || newOwnership(dayRef.current);
-      if (!management) throw new Error('本裝置的管理憑證不存在，無法修改。');
+      const management = adminEditing ? undefined : editing ? owners.find(owner => owner.id === editing) : draft || newOwnership(dayRef.current);
+      if (!adminEditing && !management) throw new Error('本裝置的管理憑證不存在，無法修改。');
       // Persist before transmission: a lost network response must not lose ownership.
-      try { remember([...readOwnership().filter(item => item.id !== management.id && item.day === dayRef.current), management]); }
-      catch { throw new Error('無法保存本機管理憑證。請允許網站儲存資料後重試；尚未送出登記。'); }
-      if (!editing) setDraft(management);
-      const result = await saveEntry(management.id, management.token, parsed.value, Boolean(editing), duplicate && confirmed);
+      if (management) {
+        try { remember([...readOwnership().filter(item => item.id !== management.id && item.day === dayRef.current), management]); }
+        catch { throw new Error('無法保存本機管理憑證。請允許網站儲存資料後重試；尚未送出登記。'); }
+        if (!editing) setDraft(management);
+      }
+      if (adminEditing && (!editing || !admin.session)) throw new Error('請重新登入管理員。');
+      const result = adminEditing && editing && admin.session
+        ? await adminSaveEntry(editing, admin.session.token, parsed.value, duplicate && confirmed)
+        : await saveEntry(management!.id, management!.token, parsed.value, Boolean(editing), duplicate && confirmed);
       ++readSequence.current; // Invalidate an older poll that may still be in flight.
       if (dayRef.current && result.day < dayRef.current) {
         reset(); setNotice('這筆請求在午夜前收到，已隨昨日登記到期。若今天仍需請假或遲到，請重新登記。');
         void refresh(); return;
       }
       changeDay(result.day);
-      const updatedOwner = { ...management, day: result.day };
-      try { remember([...readOwnership().filter(item => item.id !== management.id && item.day === result.day), updatedOwner]); }
-      catch { setOwners(old => [...old.filter(item => item.id !== management.id), updatedOwner]); }
+      if (management) {
+        const updatedOwner = { ...management, day: result.day };
+        try { remember([...readOwnership().filter(item => item.id !== management.id && item.day === result.day), updatedOwner]); }
+        catch { setOwners(old => [...old.filter(item => item.id !== management.id), updatedOwner]); }
+      }
       setToday(old => ({ day: result.day, serverNow: result.serverNow, nextResetAt: result.nextResetAt, entries: [result.entry, ...(old?.day === result.day ? old.entries.filter(entry => entry.id !== result.entry.id) : [])] }));
-      setNotice(editing ? '已更新你的登記，隊友的名單會自動同步。' : '登記成功！可在本裝置修改或撤回。');
+      setNotice(adminEditing ? '管理員已更新登記，公開名單會自動同步。' : editing ? '已更新你的登記，隊友的名單會自動同步。' : '登記成功！可在本裝置修改或撤回。');
       reset(); void refresh();
     } catch (failure) {
+      if (failure instanceof ApiError && failure.code === 'ADMIN_UNAUTHORIZED') admin.expire();
       if (failure instanceof ApiError && failure.code === 'DUPLICATE_NAME') { setDuplicate(true); setConfirmed(false); }
       setError(failure instanceof Error ? failure.message : '送出失敗，請重試。');
     } finally { busyRef.current = false; setBusy(false); }
@@ -129,6 +146,7 @@ export function App() {
   function editEntry(entry: Entry) {
     if (busyRef.current || actionRef.current) return;
     setEditing(entry.id); setDraft(null); setForm({ name: entry.name, status: entry.status, reason: entry.reason, eta: entry.eta || '' });
+    setAdminEditing(Boolean(admin.session));
     setError(''); setNotice(''); setDuplicate(false); setConfirmed(false); setWithdraw(null);
     formRef.current?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
     formRef.current?.querySelector<HTMLInputElement>('#name')?.focus({ preventScroll: true });
@@ -136,17 +154,20 @@ export function App() {
   async function deleteEntry(id: string) {
     if (actionRef.current || busyRef.current) return;
     const owner = owners.find(item => item.id === id);
-    if (!owner) return;
+    if (!owner && !admin.session) return;
     actionRef.current = true; setActionId(id); setActionError('');
     try {
-      try { await removeEntry(id, owner.token); }
+      try { if (admin.session) await adminRemoveEntry(id, admin.session.token); else await removeEntry(id, owner!.token); }
       catch (failure) { if (!(failure instanceof ApiError && failure.code === 'NOT_FOUND')) throw failure; }
       ++readSequence.current;
       setToday(old => old && { ...old, entries: old.entries.filter(entry => entry.id !== id) });
       try { remember(readOwnership().filter(item => item.id !== id)); } catch { setOwners(old => old.filter(item => item.id !== id)); }
       if (editing === id) reset();
-      setWithdraw(null); setNotice('已撤回登記。若恢復正常出席，不需再填寫。'); void refresh();
-    } catch (failure) { setActionError(failure instanceof Error ? failure.message : '撤回失敗，請重試。'); }
+      setWithdraw(null); setNotice(admin.session ? '管理員已刪除登記，公開名單會自動同步。' : '已撤回登記。若恢復正常出席，不需再填寫。'); void refresh();
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.code === 'ADMIN_UNAUTHORIZED') admin.expire();
+      setActionError(failure instanceof Error ? failure.message : '操作失敗，請重試。');
+    }
     finally { actionRef.current = false; setActionId(null); }
   }
 
@@ -171,7 +192,7 @@ export function App() {
       <div className="notice" role="status" aria-live="polite">{notice}</div>
       <div className="workspace">
         <section className="card form-card" aria-labelledby="form-title">
-          <div className="section-heading"><span className="section-number">01</span><div><h2 id="form-title">{editing ? '修改我的登記' : '登記今日狀態'}</h2><p>{editing ? '調整行程，讓隊友掌握最新消息。' : '花一點時間，讓團隊好安排。'}</p></div><span className="required-hint">* 必填</span></div>
+          <div className="section-heading"><span className="section-number">01</span><div><h2 id="form-title">{adminEditing ? '管理員修改登記' : editing ? '修改我的登記' : '登記今日狀態'}</h2><p>{adminEditing ? '目前正在修改選取的今日登記。' : editing ? '調整行程，讓隊友掌握最新消息。' : '花一點時間，讓團隊好安排。'}</p></div><span className="required-hint">* 必填</span></div>
           <form onSubmit={submit} ref={formRef} noValidate>
             <fieldset disabled={busy || Boolean(actionId)} className="form-fields">
               <div className="field"><label htmlFor="name">姓名 <span className="required">*</span></label><input id="name" name="name" autoComplete="name" placeholder="請輸入你的姓名" value={form.name} onChange={event => update({ name: event.target.value })} aria-required="true" maxLength={NAME_MAX * 2} /><span className={'counter' + (charCount(form.name.trim()) > NAME_MAX ? ' over' : '')}>{charCount(form.name.trim())} / {NAME_MAX}</span></div>
@@ -182,7 +203,7 @@ export function App() {
               {form.status === 'late' && <div className="field eta-field"><label htmlFor="eta">預計抵達時間 <span className="optional">選填 · 台灣時間</span></label><input id="eta" name="eta" type="time" value={form.eta} onChange={event => update({ eta: event.target.value })} /></div>}
               <div className="field"><label htmlFor="reason">原因 <span className="required">*</span></label><textarea id="reason" name="reason" rows={4} placeholder="簡單說明原因，讓隊友了解你的狀況…" value={form.reason} onChange={event => update({ reason: event.target.value })} maxLength={REASON_MAX * 2} aria-required="true" /><span className={'counter' + (charCount(form.reason.trim()) > REASON_MAX ? ' over' : '')}>{charCount(form.reason.trim())} / {REASON_MAX}</span></div>
               <p className="privacy-note"><span aria-hidden="true">ⓘ</span> 姓名與原因將公開顯示，請勿填寫敏感個資。</p>
-              {duplicate && <div className="duplicate-box"><label><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />我是同名隊員，確認新增／更新自己的登記。</label><p>若先前是你本人填寫，請從名單使用「修改」。不同裝置無法管理原登記。</p></div>}
+              {duplicate && <div className="duplicate-box"><label><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />{adminEditing ? '已確認同名情況，儲存這筆登記的修改。' : '我是同名隊員，確認新增／更新自己的登記。'}</label><p>{adminEditing ? '只會修改目前選取的這筆登記。' : '若先前是你本人填寫，請從名單使用「修改」。不同裝置無法管理原登記。'}</p></div>}
               {error && <p className="error-box" role="alert">{error}</p>}
               <div className="submit-row"><button className="primary-button" type="submit" disabled={busy || !today || Boolean(actionId)}>{busy ? <><span className="spinner" />處理中…</> : <>{error && !duplicate ? '重試送出' : editing ? '儲存修改' : '送出今日登記'}<span aria-hidden="true">↗</span></>}</button>{editing && <button type="button" className="secondary-button" onClick={reset}>取消修改</button>}</div>
             </fieldset>
@@ -204,8 +225,8 @@ export function App() {
               <div className="entry-top"><div className="entry-person"><span className={'avatar ' + entry.status} aria-hidden="true">{Array.from(entry.name)[0]}</span><div><h3>{entry.name}</h3>{own && <span className="own-label">我的登記</span>}</div></div><span className={'badge ' + entry.status}>{entry.status === 'leave' ? '請假' : '遲到'}</span></div>
               <p className="entry-reason">{entry.reason}</p>
               {entry.eta && <p className="entry-eta"><span aria-hidden="true">◷</span> 預計 {entry.eta} 抵達</p>}
-              <div className="entry-footer"><time dateTime={entry.createdAt}>{timeLabel(entry.createdAt)} 登記{entry.updatedAt !== entry.createdAt ? ' · 已修改' : ''}</time>{own && <div className="entry-actions"><button type="button" disabled={busy || Boolean(actionId)} onClick={() => editEntry(entry)}>修改</button><button type="button" disabled={busy || Boolean(actionId)} onClick={() => { setWithdraw(entry.id); setActionError(''); }}>撤回</button></div>}</div>
-              {withdraw === entry.id && <div className="withdraw-box"><p>確定撤回這筆登記？</p><div><button className="danger-button" disabled={Boolean(actionId)} onClick={() => void deleteEntry(entry.id)}>{actionId === entry.id ? '撤回中…' : '確認撤回'}</button><button className="secondary-button" disabled={Boolean(actionId)} onClick={() => setWithdraw(null)}>保留登記</button></div>{actionError && <p role="alert" className="action-error">{actionError}</p>}</div>}
+              <div className="entry-footer"><time dateTime={entry.createdAt}>{timeLabel(entry.createdAt)} 登記{entry.updatedAt !== entry.createdAt ? ' · 已修改' : ''}</time>{(own || admin.session) && <div className="entry-actions"><button type="button" disabled={busy || Boolean(actionId)} onClick={() => editEntry(entry)}>修改</button><button type="button" disabled={busy || Boolean(actionId)} onClick={() => { setWithdraw(entry.id); setActionError(''); }}>{admin.session ? '刪除' : '撤回'}</button></div>}</div>
+              {withdraw === entry.id && <div className="withdraw-box"><p>{admin.session ? '確定刪除這筆登記？' : '確定撤回這筆登記？'}</p><div><button className="danger-button" disabled={Boolean(actionId)} onClick={() => void deleteEntry(entry.id)}>{actionId === entry.id ? '處理中…' : admin.session ? '確認刪除' : '確認撤回'}</button><button className="secondary-button" disabled={Boolean(actionId)} onClick={() => setWithdraw(null)}>保留登記</button></div>{actionError && <p role="alert" className="action-error">{actionError}</p>}</div>}
             </article>;
           })}</div>
           <p className="list-footnote">每 10 秒同步 · 登記時間皆為台灣時間</p>
@@ -213,5 +234,6 @@ export function App() {
       </div>
     </main>
     <footer className="page-footer"><span>ONE TEAM. SAME TABLE.</span><p>今日的安排，讓彼此都知道。</p></footer>
+    <AdminPanel admin={admin} />
   </div>;
 }

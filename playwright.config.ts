@@ -11,6 +11,6 @@ export default defineConfig({
     command: 'node scripts/e2e-server.mjs',
     url: 'http://127.0.0.1:3187/api/health',
     reuseExistingServer: false,
-    env: { NODE_ENV: 'development', PORT: '3187', HOST: '127.0.0.1', PUBLIC_ORIGIN: 'http://127.0.0.1:3187', DATABASE_PATH: './.test-data/e2e.sqlite', TRUST_PROXY: 'false' },
+    env: { NODE_ENV: 'development', PORT: '3187', HOST: '127.0.0.1', PUBLIC_ORIGIN: 'http://127.0.0.1:3187', DATABASE_PATH: './.test-data/e2e.sqlite', TRUST_PROXY: 'false', ADMIN_USERNAME: 'test-coach', ADMIN_PASSWORD: 'browser-admin-test-only' },
   },
 });

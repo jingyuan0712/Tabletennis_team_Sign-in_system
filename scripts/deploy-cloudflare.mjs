@@ -6,6 +6,7 @@ for (const name of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'RATE_LIMIT
   if (!process.env[name]) throw new Error(`Missing GitHub Actions secret: ${name}`);
 }
 if (process.env.RATE_LIMIT_SECRET.length < 32 || /[\r\n]/.test(process.env.RATE_LIMIT_SECRET)) throw new Error('RATE_LIMIT_SECRET must have >=32 characters and no newlines.');
+if (process.env.ADMIN_PASSWORD && (process.env.ADMIN_PASSWORD.length < 8 || process.env.ADMIN_PASSWORD.length > 256 || /[\r\n]/.test(process.env.ADMIN_PASSWORD))) throw new Error('ADMIN_PASSWORD must have 8-256 characters and no newlines.');
 function wrangler(args, input) {
   const result = spawnSync(process.execPath, ['node_modules/wrangler/bin/wrangler.js', ...args, '--config', 'wrangler.deploy.json'], {
     env: { ...process.env, WRANGLER_SEND_METRICS: 'false' },
@@ -16,6 +17,9 @@ function wrangler(args, input) {
 wrangler(['d1', 'migrations', 'apply', 'DB', '--remote']);
 wrangler(['deploy']);
 wrangler(['secret', 'put', 'RATE_LIMIT_SECRET'], process.env.RATE_LIMIT_SECRET + '\n');
+// Optional for existing deployments: missing value never disables public use and
+// never deletes an administrator secret configured directly in Cloudflare.
+if (process.env.ADMIN_PASSWORD) wrangler(['secret', 'put', 'ADMIN_PASSWORD'], process.env.ADMIN_PASSWORD + '\n');
 
 const api = process.env.CLOUDFLARE_API_URL;
 let healthy = false;

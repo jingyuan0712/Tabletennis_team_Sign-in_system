@@ -1,3 +1,4 @@
 # Only for `npm run dev:cloudflare`. Never commit the filled .dev.vars file.
 # Generate a random value >=32 characters; the production value belongs in Secrets.
 RATE_LIMIT_SECRET=local-development-only-replace-with-random-value
+ADMIN_PASSWORD=

@@ -8,6 +8,16 @@
   -webkit-font-smoothing:antialiased;
   font-size:16px
 }
+.admin-section { padding:0 0 30px; text-align:center; }
+.admin-toggle { border:0; background:transparent; color:#657d90; padding:10px 18px; font-size:13px; }
+.admin-toggle:hover { text-decoration:underline; }
+.admin-login { max-width:390px; margin:12px auto 0; padding:24px; text-align:left; }
+.admin-login>p { color:#6d7d89; font-size:13px; margin:8px 0 20px; }
+.admin-login .primary-button { width:100%; }
+.admin-login>small { display:block; font-size:12px; color:#6d7d89; margin-top:14px; }
+.admin-session-bar { display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:12px; font-size:13px; color:#406453; }
+.admin-session-bar p { overflow-wrap:anywhere; }
+.admin-error { max-width:420px; margin:12px auto 0; text-align:left; }
 * {
   box-sizing:border-box
 }

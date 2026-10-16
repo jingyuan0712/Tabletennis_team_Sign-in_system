@@ -4,6 +4,8 @@
 
 **目前主要上線方式已改為 GitHub Pages＋Cloudflare Workers／D1，操作步驟見 [CLOUD_DEPLOY.md](./CLOUD_DEPLOY.md)。不需要個人電腦或 VPS 常駐，也不需要購買網域。** 本文件下方的 Node／SQLite／Docker 是保留的本機開發與自架替代方案，其常駐主機要求不適用於雲端方案。前端與表單行為共用，Cloudflare 後端另由 `cloudflare/worker.ts` 實作。
 
+網站底部提供選用的管理員登入，管理員可修改／刪除今日登記；一般隊員維持免登入。帳號預設 `jingyuan`，密碼必須由伺服器 Secret 設定，程式沒有內建密碼。雲端設定見上述部署文件的「已上線專案新增管理員功能」。
+
 ## 架構與執行條件
 
 - React 19、TypeScript、Vite 前端；Node.js **24.x** 原生 HTTP API 與內建 `node:sqlite`，不需安裝原生資料庫套件。Node 24 的 SQLite API 仍屬演進中的 API，請在升級 major 版本前執行測試。
@@ -36,6 +38,8 @@ npm.cmd run start
 
 Schema 由 `migrations/001_initial.sql` 建立；`db:migrate`、API 啟動、scheduler 啟動都會套用尚未執行的 migration，交易確保重跑安全。已套用的 migration 請勿修改，後續改動新增檔案。沒有 seed 指令，也不會新增正式測試隊員。
 
+本機要設定管理員密碼，可執行 `npm.cmd run admin:configure`，在隱藏輸入提示輸入自己的密碼；指令只更新被 Git 忽略的 `.env`，不會印出密碼。設定後重新啟動本機服務。正式 Cloudflare 仍需額外設定 GitHub Secret `ADMIN_PASSWORD`，本機 `.env` 不會被推上網路。Docker Compose 會從 `.env` 將 `ADMIN_USERNAME`／`ADMIN_PASSWORD` 傳入 app；不要將完整 `docker compose config` 或 inspect 環境變數輸出到公開日誌。
+
 ## 環境變數
 
 | 變數 | 用途 |
@@ -46,6 +50,8 @@ Schema 由 `migrations/001_initial.sql` 建立；`db:migrate`、API 啟動、sch
 | `DATABASE_PATH` | 本機預設 `./data/team.sqlite`；容器固定 `/data/team.sqlite` |
 | `HOST` / `PORT` | 本機預設 `127.0.0.1:3001`；容器內為 `0.0.0.0:3001` |
 | `TRUST_PROXY` | 只有在反向代理會覆寫 `X-Real-IP` 且無法繞過代理存取 app 時才設 `true` |
+| `ADMIN_USERNAME` | 選用管理員帳號，預設 `jingyuan`，只由伺服器驗證 |
+| `ADMIN_PASSWORD` | 選用管理員密碼，8–256 字元，只存在伺服器環境／Secret；未設定時關閉管理員登入 |
 | `DOMAIN` | Compose/Caddy 的實際網域，例如 `team.example.com` |
 
 產生祕密：

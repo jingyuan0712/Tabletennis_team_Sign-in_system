@@ -23,7 +23,8 @@
     "dev:cloudflare": "wrangler dev --local --test-scheduled",
     "db:cloudflare:local": "wrangler d1 migrations apply DB --local",
     "build:pages": "node scripts/build-pages.mjs",
-    "cloudflare:check": "wrangler deploy --dry-run --outdir .cloudflare-build"
+    "cloudflare:check": "wrangler deploy --dry-run --outdir .cloudflare-build",
+    "admin:configure": "node scripts/set-admin-password.mjs"
   },
   "dependencies": {
     "croner": "^9.1.0",

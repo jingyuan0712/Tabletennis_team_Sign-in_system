@@ -17,7 +17,7 @@ const valid = { name: ' 測試隊員 ', status: 'leave', reason: ' 今日有事 
 function fixture(initial = '2026-10-15T10:00:00Z') {
   const db = openDatabase(':memory:'); migrate(db);
   let time = new Date(initial);
-  const app = createApp(db, { origin, secret: 'test-secret-with-more-than-32-characters', production: false, trustProxy: false, staticDir: './dist', now: () => time });
+  const app = createApp(db, { origin, secret: 'test-secret-with-more-than-32-characters', production: false, trustProxy: false, staticDir: './dist', now: () => time, adminUsername: 'test-coach', adminPassword: 'test-only-administrator-password' });
   const ready = new Promise<string>(resolve => app.listen(0, '127.0.0.1', () => {
     const address = app.address(); assert(address && typeof address !== 'string');
     resolve(`http://127.0.0.1:${address.port}`);
@@ -149,4 +149,28 @@ test('file database survives restart; independent server/scheduler connections s
     cleanup(scheduler, new Date('2026-10-15T10:00:00Z'));
     assert.equal(reader.prepare('SELECT count(*) AS count FROM entries').get()?.count, 0);
   } finally { reader.close(); scheduler.close(); rmSync(directory, { recursive: true }); }
+});
+
+test('Node admin: authenticated moderation, own tokens cannot grant admin access, logout and expiry', async () => {
+  const f = fixture(); const id = randomUUID(); const owner = token();
+  try {
+    await f.request('/api/entries', 'POST', { ...valid, id }, owner);
+    assert.equal((await f.request(`/api/admin/entries/${id}`, 'DELETE')).status, 401);
+    assert.equal((await f.request(`/api/admin/entries/${id}`, 'DELETE', undefined, owner)).status, 401);
+    assert.equal((await f.request('/api/admin/session', 'POST', { username: 'test-coach', password: 'wrong' })).status, 401);
+    const login = await f.request('/api/admin/session', 'POST', { username: 'test-coach', password: 'test-only-administrator-password' });
+    assert.equal(login.status, 200);
+    const session = await login.json();
+    assert.equal((await f.request(`/api/admin/entries/${id}`, 'PUT', { ...valid, reason: '' }, session.token)).status, 422);
+    assert.equal((await f.request(`/api/admin/entries/${id}`, 'PUT', { ...valid, reason: '管理員修正' }, session.token)).status, 200);
+    assert.equal((await (await f.request('/api/today')).json()).entries[0].reason, '管理員修正');
+    assert.equal((await f.request(`/api/entries/${id}`, 'PUT', { ...valid, reason: '原填寫者再更新' }, owner)).status, 200);
+    assert.equal((await f.request('/api/admin/session', 'DELETE', undefined, session.token)).status, 204);
+    assert.equal((await f.request(`/api/admin/entries/${id}`, 'DELETE', undefined, session.token)).status, 401);
+    const second = await (await f.request('/api/admin/session', 'POST', { username: 'test-coach', password: 'test-only-administrator-password' })).json();
+    f.advance('2026-10-15T12:00:00Z');
+    assert.equal((await f.request(`/api/admin/entries/${id}`, 'DELETE', undefined, second.token)).status, 401);
+    cleanup(f.db, new Date('2026-10-15T12:00:00Z'));
+    assert.equal(f.db.prepare('SELECT count(*) AS n FROM admin_sessions').get()?.n, 0);
+  } finally { await f.close(); }
 });

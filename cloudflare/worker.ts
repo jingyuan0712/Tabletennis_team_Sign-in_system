@@ -1,9 +1,23 @@
 import { nextReset, taipeiDay, validateInput, type Entry } from '../shared/model.js';
+import { AdminError, loginAdmin, logoutAdmin, verifyAdmin, type AdminStore } from '../shared/admin-auth.js';
 
 export interface Env {
   DB: D1Database;
   ALLOWED_ORIGIN: string;
   RATE_LIMIT_SECRET: string;
+  ADMIN_USERNAME?: string;
+  ADMIN_PASSWORD?: string;
+}
+function adminStore(env: Env): AdminStore {
+  return {
+    async consume(key, expires) {
+      const row = await env.DB.prepare('INSERT INTO rate_limits(key,hits,expires_at) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET hits=hits+1 RETURNING hits').bind(key, expires).first<{ hits: number }>();
+      return row?.hits || 999;
+    },
+    async create(hash, fingerprint, expires) { await env.DB.prepare('INSERT INTO admin_sessions(token_hash,fingerprint,expires_at) VALUES (?,?,?)').bind(hash, fingerprint, expires).run(); },
+    async find(hash) { return await env.DB.prepare('SELECT fingerprint,expires_at FROM admin_sessions WHERE token_hash=?').bind(hash).first<{ fingerprint: string; expires_at: number }>() || undefined; },
+    async remove(hash) { await env.DB.prepare('DELETE FROM admin_sessions WHERE token_hash=?').bind(hash).run(); },
+  };
 }
 const columns = 'id, day, name, status, reason, eta, created_at AS createdAt, updated_at AS updatedAt';
 const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -140,6 +154,42 @@ export async function handleRequest(request: Request, env: Env, now = new Date()
     const write = request.method !== 'GET';
     if (write && origin !== env.ALLOWED_ORIGIN) throw new HttpError(403, 'ORIGIN', '請從網站頁面操作。');
     await rateLimit(request, env, now, write);
+    if (path.startsWith('/api/admin/')) {
+      const config = { username: env.ADMIN_USERNAME || 'jingyuan', password: env.ADMIN_PASSWORD || '', secret: env.RATE_LIMIT_SECRET };
+      const store = adminStore(env);
+      if (path === '/api/admin/session') {
+        if (request.method === 'POST') return respond(200, await loginAdmin(config, store, request.headers.get('CF-Connecting-IP') || 'local', await readJson(request), now));
+        if (request.method === 'GET') return respond(200, await verifyAdmin(config, store, request.headers.get('Authorization'), now));
+        if (request.method === 'DELETE') { await logoutAdmin(store, request.headers.get('Authorization')); return respond(204); }
+        throw new HttpError(405, 'METHOD', '不支援此操作。');
+      }
+      await verifyAdmin(config, store, request.headers.get('Authorization'), now);
+      const target = /^\/api\/admin\/entries\/([^/]+)$/.exec(path);
+      if (!target || !idPattern.test(target[1])) throw new HttpError(404, 'NOT_FOUND', '找不到此登記。');
+      const id = target[1];
+      if (request.method === 'DELETE') {
+        const result = await env.DB.prepare('DELETE FROM entries WHERE id=? AND day=?').bind(id, day).run();
+        if (!result.meta.changes) throw new HttpError(404, 'NOT_FOUND', '登記已刪除或到期。');
+        return respond(204);
+      }
+      if (request.method !== 'PUT') throw new HttpError(405, 'METHOD', '不支援此操作。');
+      const data = await readJson(request);
+      const parsed = validateInput(data);
+      if ('error' in parsed) throw new HttpError(422, 'VALIDATION', parsed.error);
+      const value = parsed.value;
+      const [before, duplicate, changed, after] = await env.DB.batch([
+        env.DB.prepare('SELECT id FROM entries WHERE id=? AND day=?').bind(id, day),
+        env.DB.prepare('SELECT id FROM entries WHERE day=? AND name=? AND id<>? LIMIT 1').bind(day, value.name, id),
+        env.DB.prepare(`UPDATE entries SET name=?,status=?,reason=?,eta=?,updated_at=? WHERE id=? AND day=? AND
+          (?=1 OR NOT EXISTS (SELECT 1 FROM entries WHERE day=? AND name=? AND id<>?))`)
+          .bind(value.name, value.status, value.reason, value.eta, timestamp, id, day, data.confirmSameName === true ? 1 : 0, day, value.name, id),
+        env.DB.prepare(`SELECT ${columns} FROM entries WHERE id=? AND day=?`).bind(id, day),
+      ]);
+      if (!before.results.length) throw new HttpError(404, 'NOT_FOUND', '登記已刪除或到期。');
+      if (duplicate.results.length && data.confirmSameName !== true) throw new HttpError(409, 'DUPLICATE_NAME', '今天已有完全相同姓名，請確認後儲存修改。');
+      if (!changed.meta.changes) throw new HttpError(409, 'CONFLICT', '資料已變更，請重新讀取後再試。');
+      return respond(200, { entry: after.results[0], day, serverNow: timestamp, nextResetAt: nextReset(day) });
+    }
     if (path === '/api/today' && request.method === 'GET') {
       const { results } = await env.DB.prepare(`SELECT ${columns} FROM entries WHERE day = ? ORDER BY created_at DESC, id DESC`).bind(day).all<Entry>();
       return respond(200, { day, serverNow: timestamp, nextResetAt: nextReset(day), entries: results });
@@ -150,8 +200,8 @@ export async function handleRequest(request: Request, env: Env, now = new Date()
     const result = await mutate(request, env, day, timestamp, match?.[1]);
     return respond(result.status, result.entry ? { entry: result.entry, day, serverNow: timestamp, nextResetAt: nextReset(day) } : undefined);
   } catch (error) {
-    if (error instanceof HttpError) {
-      if (error.status === 429) headers.set('Retry-After', '600');
+    if (error instanceof HttpError || error instanceof AdminError) {
+      if (error.status === 429) headers.set('Retry-After', error instanceof AdminError ? '900' : '600');
       return respond(error.status, { code: error.code, message: error.message });
     }
     // Do not log raw D1 errors, SQL parameters, request headers or payloads.
@@ -163,6 +213,7 @@ export async function cleanupD1(env: Pick<Env, 'DB'>, now = new Date()): Promise
   await env.DB.batch([
     env.DB.prepare('DELETE FROM entries WHERE day < ?').bind(taipeiDay(now)),
     env.DB.prepare('DELETE FROM rate_limits WHERE expires_at <= ?').bind(now.getTime()),
+    env.DB.prepare('DELETE FROM admin_sessions WHERE expires_at <= ?').bind(now.getTime()),
   ]);
 }
 

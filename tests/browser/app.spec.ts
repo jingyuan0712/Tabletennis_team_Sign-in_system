@@ -90,3 +90,43 @@ test('open page crosses Taipei midnight using server clock, clears expired list 
   await expect(page.getByText('今天還沒有人登記請假或遲到。')).toBeVisible();
   await expect(page.locator('.today-date')).toContainText('10月16日');
 });
+
+test('footer admin login moderates another browser registration, reload restores session, logout revokes', async ({ browser }) => {
+  const member = await browser.newContext();
+  const manager = await browser.newContext({ viewport: { width: 375, height: 812 } });
+  try {
+    const a = await member.newPage(); const b = await manager.newPage();
+    await Promise.all([a.goto('/'), b.goto('/')]);
+    await register(a, '待管理登記', '請假', '隊員填寫的原因');
+    await a.getByRole('button', { name: '送出今日登記' }).click();
+    await expect(b.getByRole('article')).toHaveCount(1, { timeout: 15_000 });
+    await expect(b.getByRole('button', { name: '修改', exact: true })).toHaveCount(0);
+    await b.getByRole('button', { name: '管理員登入', exact: true }).click();
+    await b.getByLabel('管理員帳號', { exact: true }).fill('test-coach');
+    await b.getByLabel('管理員密碼', { exact: true }).fill('wrong-password');
+    await b.getByRole('button', { name: '登入管理員', exact: true }).click();
+    await expect(b.getByRole('alert')).toContainText('帳號或密碼不正確');
+    await b.getByLabel('管理員密碼', { exact: true }).fill('browser-admin-test-only');
+    await b.getByRole('button', { name: '登入管理員', exact: true }).click();
+    await expect(b.getByRole('button', { name: '登出管理員' })).toBeVisible();
+    await b.reload();
+    await expect(b.getByRole('button', { name: '登出管理員' })).toBeVisible();
+    const session = await b.evaluate(() => sessionStorage.getItem('table-tennis:admin-session:v1'));
+    expect(await b.evaluate(() => localStorage.getItem('table-tennis:admin-session:v1'))).toBeNull();
+    await b.getByRole('button', { name: '修改', exact: true }).click();
+    await expect(b.getByRole('heading', { name: '管理員修改登記' })).toBeVisible();
+    await b.getByLabel('原因', { exact: false }).fill('管理員已修正內容');
+    await b.getByRole('button', { name: '儲存修改' }).click();
+    await expect(a.getByRole('article')).toContainText('管理員已修正內容', { timeout: 15_000 });
+    expect(await b.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    // Administrator edits do not add the other person's credential to local ownership.
+    expect(await b.evaluate(() => JSON.parse(localStorage.getItem('table-tennis:management:v1') || '[]').length)).toBe(0);
+    await b.getByRole('button', { name: '刪除', exact: true }).click();
+    await b.getByRole('button', { name: '確認刪除', exact: true }).click();
+    await expect(a.getByRole('article')).toHaveCount(0, { timeout: 15_000 });
+    await b.getByRole('button', { name: '登出管理員' }).click();
+    await expect(b.getByRole('button', { name: '管理員登入', exact: true })).toBeVisible();
+    expect((await b.request.get('/api/admin/session', { headers: { Authorization: `Bearer ${session}` } })).status()).toBe(401);
+    await expect(a.getByRole('button', { name: '送出今日登記' })).toBeEnabled();
+  } finally { await member.close(); await manager.close(); }
+});
