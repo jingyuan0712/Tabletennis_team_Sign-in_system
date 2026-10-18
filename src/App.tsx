@@ -30,6 +30,8 @@ export function App() {
   const clock = useRef<{ server: number; local: number } | null>(null);
   const dayRef = useRef('');
   const readSequence = useRef(0);
+  const refreshing = useRef(false);
+  const refreshQueued = useRef(false);
   const mounted = useRef(true);
   const busyRef = useRef(false);
   const actionRef = useRef(false);
@@ -38,6 +40,7 @@ export function App() {
   const remember = useCallback((items: Ownership[]) => { writeOwnership(items); setOwners(items); }, []);
   const changeDay = useCallback((day: string) => {
     if (dayRef.current && dayRef.current !== day) {
+      ++readSequence.current;
       setToday(previous => previous ? { ...previous, day, entries: [] } : previous);
       setEditing(null); setAdminEditing(false); setDraft(null); setWithdraw(null); setDuplicate(false); setConfirmed(false);
       setNotice('新的一天開始了，昨日登記已到期。尚未送出的內容仍保留，可登記今天狀態。');
@@ -48,16 +51,26 @@ export function App() {
   }, [remember]);
 
   const refresh = useCallback(async () => {
-    const sequence = ++readSequence.current;
+    // Slow requests must be allowed to finish. Starting a new poll every 10s
+    // previously invalidated every response when latency stayed above 10s.
+    if (refreshing.current) { refreshQueued.current = true; return; }
+    refreshing.current = true;
     try {
-      const value = await getToday();
-      if (!mounted.current || sequence !== readSequence.current) return;
-      clock.current = { server: Date.parse(value.serverNow), local: performance.now() };
-      changeDay(value.day);
-      setToday(value); setSyncError('');
-    } catch (failure) {
-      if (mounted.current && sequence === readSequence.current) setSyncError(failure instanceof Error ? failure.message : '名單更新失敗，將自動重試。');
-    } finally { if (mounted.current) setLoading(false); }
+      do {
+        refreshQueued.current = false;
+        const sequence = ++readSequence.current;
+        try {
+          const value = await getToday();
+          if (mounted.current && sequence === readSequence.current) {
+            clock.current = { server: Date.parse(value.serverNow), local: performance.now() };
+            changeDay(value.day);
+            setToday(value); setSyncError('');
+          }
+        } catch (failure) {
+          if (mounted.current && sequence === readSequence.current) setSyncError(failure instanceof Error ? failure.message : '名單更新失敗，將自動重試。');
+        } finally { if (mounted.current) setLoading(false); }
+      } while (refreshQueued.current && mounted.current);
+    } finally { refreshing.current = false; }
   }, [changeDay]);
 
   useEffect(() => {
@@ -74,6 +87,7 @@ export function App() {
     const wake = () => {
       // Hide potentially expired content immediately when a suspended tab wakes.
       if (!document.hidden) {
+        ++readSequence.current;
         // performance.now() can pause during OS sleep on some devices. Until the
         // server answers, never redisplay a cached roster after a tab resumes.
         setToday(previous => previous && { ...previous, entries: [] });
@@ -87,7 +101,7 @@ export function App() {
     document.addEventListener('visibilitychange', wake);
     window.addEventListener('focus', wake); window.addEventListener('online', wake); window.addEventListener('storage', storage);
     return () => {
-      mounted.current = false; clearInterval(timer); clearInterval(poll);
+      mounted.current = false; ++readSequence.current; clearInterval(timer); clearInterval(poll);
       document.removeEventListener('visibilitychange', wake); window.removeEventListener('focus', wake);
       window.removeEventListener('online', wake); window.removeEventListener('storage', storage);
     };
@@ -109,8 +123,10 @@ export function App() {
     if ('error' in parsed) { setError(parsed.error); return; }
     if (duplicate && !confirmed) { setError('請先確認是否為同名隊員。'); return; }
     busyRef.current = true; setBusy(true); setError(''); setNotice('');
+    let recoveryOwner: Ownership | undefined;
     try {
       const management = adminEditing ? undefined : editing ? owners.find(owner => owner.id === editing) : draft || newOwnership(dayRef.current);
+      recoveryOwner = management;
       if (!adminEditing && !management) throw new Error('本裝置的管理憑證不存在，無法修改。');
       // Persist before transmission: a lost network response must not lose ownership.
       if (management) {
@@ -137,6 +153,11 @@ export function App() {
       setNotice(adminEditing ? '管理員已更新登記，公開名單會自動同步。' : editing ? '已更新你的登記，隊友的名單會自動同步。' : '登記成功！可在本裝置修改或撤回。');
       reset(); void refresh();
     } catch (failure) {
+      if (failure instanceof ApiError && failure.code === 'IDEMPOTENCY_CONFLICT' && recoveryOwner) {
+        setEditing(recoveryOwner.id); setAdminEditing(false); setDraft(null);
+        setDuplicate(false); setConfirmed(false);
+        void refresh();
+      }
       if (failure instanceof ApiError && failure.code === 'ADMIN_UNAUTHORIZED') admin.expire();
       if (failure instanceof ApiError && failure.code === 'DUPLICATE_NAME') { setDuplicate(true); setConfirmed(false); }
       setError(failure instanceof Error ? failure.message : '送出失敗，請重試。');
@@ -204,7 +225,7 @@ export function App() {
               <p className="privacy-note"><span aria-hidden="true">ⓘ</span> 姓名與原因將公開顯示，請勿填寫敏感個資。</p>
               {duplicate && <div className="duplicate-box"><label><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />{adminEditing ? '已確認同名情況，儲存這筆登記的修改。' : '我是同名隊員，確認新增／更新自己的登記。'}</label><p>{adminEditing ? '只會修改目前選取的這筆登記。' : '若先前是你本人填寫，請從名單使用「修改」。不同裝置無法管理原登記。'}</p></div>}
               {error && <p className="error-box" role="alert">{error}</p>}
-              <div className="submit-row"><button className="primary-button" type="submit" disabled={busy || !today || Boolean(actionId)}>{busy ? <><span className="spinner" />處理中…</> : <>{error && !duplicate ? '重試送出' : editing ? '儲存修改' : '送出今日登記'}<span aria-hidden="true">↗</span></>}</button>{editing && <button type="button" className="secondary-button" onClick={reset}>取消修改</button>}</div>
+              <div className="submit-row"><button className="primary-button" type="submit" disabled={busy || !today || Boolean(actionId)}>{busy ? <><span className="spinner" />處理中…</> : <>{editing ? '儲存修改' : error && !duplicate ? '重試送出' : '送出今日登記'}<span aria-hidden="true">↗</span></>}</button>{editing && <button type="button" className="secondary-button" onClick={reset}>取消修改</button>}</div>
             </fieldset>
           </form>
           <p className="device-note">可在本裝置修改或撤回；更換裝置後無法管理原登記。</p>

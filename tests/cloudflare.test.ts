@@ -107,6 +107,21 @@ test('atomic D1 duplicate confirmation including concurrent writers, idempotency
   } finally { f.close(); }
 });
 
+test('D1 changed POST retry reports conflict and requires an explicit owner update', async () => {
+  const f = fixture(); const data = input(); const owner = secret();
+  try {
+    assert.equal((await f.request('/api/entries', 'POST', data, owner)).status, 201);
+    const retry = await f.request('/api/entries', 'POST', { ...data, reason: '重試前改過的原因' }, owner);
+    assert.equal(retry.status, 409);
+    assert.equal((await retry.json() as any).code, 'IDEMPOTENCY_CONFLICT');
+    assert.equal(((await (await f.request()).json()) as any).entries[0].reason, data.reason);
+    assert.equal((await f.request(`/api/entries/${data.id}`, 'PUT', { ...data, reason: '重試前改過的原因' }, owner)).status, 200);
+    const list = await (await f.request()).json() as any;
+    assert.equal(list.entries.length, 1);
+    assert.equal(list.entries[0].reason, '重試前改過的原因');
+  } finally { f.close(); }
+});
+
 test('D1 authorizes each atomic write; ID/name does not permit modification/deletion; independent readers synchronize', async () => {
   const f = fixture(); const data = input(); const token = secret();
   try {

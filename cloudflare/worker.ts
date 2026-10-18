@@ -1,4 +1,4 @@
-import { nextReset, taipeiDay, validateInput, type Entry } from '../shared/model.js';
+import { nextReset, sameInput, taipeiDay, validateInput, type Entry } from '../shared/model.js';
 import { AdminError, loginAdmin, logoutAdmin, verifyAdmin, type AdminStore } from '../shared/admin-auth.js';
 
 export interface Env {
@@ -111,7 +111,11 @@ async function mutate(request: Request, env: Env, day: string, timestamp: string
   const probe = before.results[0] as Probe | undefined;
   checkOwnership(probe, day, request.method === 'PUT');
   // An identical POST retry succeeds even if another same-name row was added later.
-  if (request.method === 'POST' && probe && after.results[0]) return { status: 200, entry: after.results[0] as unknown as Entry };
+  if (request.method === 'POST' && probe && after.results[0]) {
+    const entry = after.results[0] as unknown as Entry;
+    if (!sameInput(entry, value)) throw new HttpError(409, 'IDEMPOTENCY_CONFLICT', '先前的登記已送達。已保留目前輸入，請按「儲存修改」更新同一筆登記。');
+    return { status: 200, entry };
+  }
   if (duplicates.results.length && !confirmed) throw new HttpError(409, 'DUPLICATE_NAME', '今天已有完全相同姓名。若是同名隊員，請確認後再送出；原登記不會被覆蓋。');
   if (!changed.meta.changes || !after.results[0]) throw new HttpError(409, 'CONFLICT', '送出識別碼已使用，請重新開啟頁面後再試。');
   return { status: request.method === 'POST' ? 201 : 200, entry: after.results[0] as unknown as Entry };

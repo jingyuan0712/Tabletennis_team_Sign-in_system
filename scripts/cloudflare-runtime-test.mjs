@@ -73,6 +73,9 @@ try {
   assert.equal(preflight.status, 204); assert.equal(preflight.headers.get('Access-Control-Allow-Origin'), origin);
   assert.equal((await request('/api/entries', 'POST', value)).status, 201);
   assert.equal((await request('/api/entries', 'POST', value)).status, 200);
+  const changedRetry = await request('/api/entries', 'POST', { ...value, reason: '重試時的新內容' });
+  assert.equal(changedRetry.status, 409);
+  assert.equal((await changedRetry.json()).code, 'IDEMPOTENCY_CONFLICT');
   const list = await (await request('/api/today')).json();
   assert.equal(list.entries.length, 1); assert(!JSON.stringify(list).includes(token));
   assert.equal((await request(`/api/entries/${id}`, 'DELETE', undefined, { Origin: origin, Authorization: 'Bearer ' + randomBytes(32).toString('base64url') })).status, 403);

@@ -3,7 +3,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
-import { nextReset, taipeiDay, validateInput } from '../shared/model.js';
+import { nextReset, sameInput, taipeiDay, validateInput, type Entry } from '../shared/model.js';
 import { PUBLIC_COLUMNS, todayEntries } from './db.js';
 import { AdminError, loginAdmin, logoutAdmin, verifyAdmin, type AdminStore } from '../shared/admin-auth.js';
 
@@ -159,7 +159,11 @@ export function createApp(db: DatabaseSync, options: AppOptions) {
         if (existing && (!authorized(existing.token_hash, tokenHash) || existing.day !== day)) throw new HttpError(403, 'FORBIDDEN', '無法管理這筆登記，請使用原填寫裝置；舊登記已到期。');
         if (req.method === 'POST' && existing) {
           // A lost response/repeated POST returns the same row; never creates another.
-          result = db.prepare(`SELECT ${PUBLIC_COLUMNS} FROM entries WHERE id = ? AND day = ?`).get(id, day);
+          const entry = db.prepare(`SELECT ${PUBLIC_COLUMNS} FROM entries WHERE id = ? AND day = ?`).get(id, day) as Entry | undefined;
+          if (entry && parsed && 'value' in parsed && !sameInput(entry, parsed.value)) {
+            throw new HttpError(409, 'IDEMPOTENCY_CONFLICT', '先前的登記已送達。已保留目前輸入，請按「儲存修改」更新同一筆登記。');
+          }
+          result = entry;
           responseCode = 200;
         } else if (req.method === 'DELETE') {
           if (!existing) throw new HttpError(404, 'NOT_FOUND', '登記已撤回或到期。');

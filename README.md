@@ -40,6 +40,8 @@ Schema 由 `migrations/001_initial.sql` 建立；`db:migrate`、API 啟動、sch
 
 本機要設定管理員密碼，可執行 `npm.cmd run admin:configure`，在隱藏輸入提示輸入自己的密碼；指令只更新被 Git 忽略的 `.env`，不會印出密碼。設定後重新啟動本機服務。正式 Cloudflare 仍需額外設定 GitHub Secret `ADMIN_PASSWORD`，本機 `.env` 不會被推上網路。Docker Compose 會從 `.env` 將 `ADMIN_USERNAME`／`ADMIN_PASSWORD` 傳入 app；不要將完整 `docker compose config` 或 inspect 環境變數輸出到公開日誌。
 
+本機密碼設定工具會確認 Node／Compose 的引號可安全保存密碼；若特殊字元組合無法相容，會保留原檔並報錯。可改用不含單引號的密碼，或直接由伺服器環境設定 `ADMIN_PASSWORD`。GitHub Secret 不受這個 `.env` 格式限制。
+
 ## 環境變數
 
 | 變數 | 用途 |
@@ -119,7 +121,7 @@ docker compose exec app node --input-type=module -e "import {openDatabase} from 
 - 姓名 20 字、原因 200 字，Unicode 字元計數、去除頭尾空白、前後端驗證；DB 再限制欄位、狀態與 ETA。SQL 皆使用綁定參數。React 以純文字渲染原因，不當成 HTML。
 - 瀏覽器以 Web Crypto 產生 256-bit 隨機管理憑證、UUID；在送出前保存憑證於本機 localStorage，避免伺服器已成功而回應丟失時失去管理能力。只保存自己的 ID、憑證、日期，**不保存全隊名單或原因**。同一天可管理本機送出的多筆登記。共用瀏覽器／相同瀏覽器設定檔視為同一個裝置。
 - 憑證只透過 HTTPS `Authorization: Bearer` 傳送，伺服器只保存 SHA-256 雜湊，固定時間比較；公開 API 的明確欄位清單排除雜湊與憑證。知道姓名或 ID 不足以修改／撤回。遺失瀏覽器資料、換裝置或無痕視窗關閉後無法恢復管理，不提供免登入找回機制。
-- 同一 id＋憑證重試 POST 會回傳原登記，不重複新增；同名檢查與寫入同一交易，沒有覆寫別人資料的路徑。同名確認只用於新增自己的獨立登記或修改已有權限的登記，不會授予他人紀錄權限。
+- 同一 id＋憑證及相同內容重試 POST 會回傳原登記，不重複新增；若斷線後改過內容，會保留輸入並切換為「儲存修改」，確認後更新原筆資料。同名檢查與寫入同一交易，沒有覆寫別人資料的路徑。同名確認只用於新增自己的獨立登記或修改已有權限的登記，不會授予他人紀錄權限。
 - 所有 API 回應 `Cache-Control: no-store`。寫入須為同源 Origin，POST/PUT 須為 JSON；無跨域 CORS。瀏覽器憑證不放 URL 或公開 API。CSP、禁止 iframe、Referrer-Policy 與正式環境 HSTS 降低外洩風險。
 - 持久化 SQLite 限流：每 IP 每 10 分鐘共 30 次寫入（包含失敗嘗試），讀取每分鐘 600 次，配合 4KiB body、10 秒請求上限。只存含日期的 IP HMAC，不存原 IP；過期限流桶由排程清除。共用球館 Wi-Fi 可能共用額度，可依隊伍規模調整 `server/app.ts`。基本限流無法阻止分散式攻擊，公開網址仍可能被亂填；需要時在反向代理加流量限制，不能靠姓名當作身份驗證。
 - app 不記錄請求、姓名、原因、憑證、原始錯誤或識別碼；scheduler 只記錄成功／失敗代碼。沒有 analytics、Sentry、第三方字型或圖片服務，Caddy 沒開 access log。不要開啟 body/header debug logging、APM payload capture、SQL statement/parameter tracing、`docker compose config` 的完整輸出或將 `.env` 放進 CI artifact；`config --quiet` 只驗證設定。

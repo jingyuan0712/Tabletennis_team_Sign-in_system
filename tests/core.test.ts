@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { parseEnv } from 'node:util';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { Cron } from 'croner';
 import { createApp } from '../server/app.js';
 import { cleanup } from '../server/cleanup.js';
@@ -37,6 +39,27 @@ test('front/back shared validator: required trimmed fields, Unicode limits, stat
   for (const patch of [{ name: '　 \t' }, { reason: '\n　' }, { reason: '字'.repeat(201) }, { name: '名'.repeat(21) }, { status: 'present' }, { name: 'A\nB' }, { reason: 'a\0b' }, { status: 'late', eta: '24:01' }]) assert('error' in validateInput({ ...valid, ...patch }));
   assert('value' in validateInput({ ...valid, name: '🏓'.repeat(20), status: 'late', eta: '19:30' }));
   assert.deepEqual(validateInput({ ...valid, eta: '20:00' }), { value: { ...valid, name: '測試隊員', reason: '今日有事', eta: null } });
+});
+
+test('local administrator setup preserves supported special characters without exposing the password', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'team-admin-'));
+  const script = resolve('scripts/set-admin-password.mjs');
+  try {
+    writeFileSync(join(directory, '.env.example'), 'NODE_ENV=development\nADMIN_PASSWORD=\n');
+    for (const password of ['test-double"-slash\\-dollar$-hash#', "test-apostrophe'-hash#", ' 前後空白與中文密碼 ']) {
+      const run = spawnSync(process.execPath, [script], { cwd: directory, input: password + '\n', encoding: 'utf8' });
+      assert.equal(run.status, 0);
+      assert.equal(parseEnv(readFileSync(join(directory, '.env'), 'utf8')).ADMIN_PASSWORD, password);
+      assert(!run.stdout.includes(password));
+      assert(!run.stderr.includes(password));
+    }
+    const previous = readFileSync(join(directory, '.env'), 'utf8');
+    const unsupported = 'test-both\'"-quotes$';
+    const rejected = spawnSync(process.execPath, [script], { cwd: directory, input: unsupported + '\n', encoding: 'utf8' });
+    assert.notEqual(rejected.status, 0);
+    assert.equal(readFileSync(join(directory, '.env'), 'utf8'), previous);
+    assert(!rejected.stderr.includes(unsupported));
+  } finally { rmSync(directory, { recursive: true }); }
 });
 
 test('server assigns Taipei day; UTC midnight is not Taipei midnight; cron is Taiwan midnight', () => {
@@ -91,6 +114,21 @@ test('ownership is enforced by backend for update/delete/ID replay; all readers 
     assert.equal(publicData.entries[0].reason, '行程已變更'); assert.equal(publicData.entries[0].eta, '19:45');
     assert.equal((await f.request(`/api/entries/${id}`, 'DELETE', undefined, secret)).status, 204);
     publicData = await (await f.request('/api/today')).json(); assert.equal(publicData.entries.length, 0);
+  } finally { await f.close(); }
+});
+
+test('a changed POST retry cannot silently discard edits after a lost response', async () => {
+  const f = fixture(); const id = randomUUID(); const owner = token();
+  try {
+    assert.equal((await f.request('/api/entries', 'POST', { ...valid, id }, owner)).status, 201);
+    const retry = await f.request('/api/entries', 'POST', { ...valid, id, reason: '重試前改過的原因' }, owner);
+    assert.equal(retry.status, 409);
+    assert.equal((await retry.json()).code, 'IDEMPOTENCY_CONFLICT');
+    assert.equal((await (await f.request('/api/today')).json()).entries[0].reason, '今日有事');
+    assert.equal((await f.request(`/api/entries/${id}`, 'PUT', { ...valid, reason: '重試前改過的原因' }, owner)).status, 200);
+    const list = await (await f.request('/api/today')).json();
+    assert.equal(list.entries.length, 1);
+    assert.equal(list.entries[0].reason, '重試前改過的原因');
   } finally { await f.close(); }
 });
 

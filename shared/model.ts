@@ -6,6 +6,10 @@ export type EntryInput = { name: string; status: Status; reason: string; eta: st
 export type Entry = EntryInput & { id: string; day: string; createdAt: string; updatedAt: string };
 export type Today = { day: string; serverNow: string; nextResetAt: string; entries: Entry[] };
 
+export function sameInput(entry: EntryInput, input: EntryInput): boolean {
+  return entry.name === input.name && entry.status === input.status && entry.reason === input.reason && entry.eta === input.eta;
+}
+
 export function taipeiDay(now: Date): string {
   // Fixed UTC+8: Taiwan has no daylight saving. Never use the host/device local date.
   return new Date(now.getTime() + 8 * 3_600_000).toISOString().slice(0, 10);

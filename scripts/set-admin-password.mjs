@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import readline from 'node:readline';
+import { parseEnv } from 'node:util';
 
 // Password enters via hidden terminal input/stdin, never command arguments/logs.
 process.stdout.write('Administrator password (input hidden): ');
@@ -24,7 +25,14 @@ if (process.stdin.isTTY) {
 if (password.length < 8 || password.length > 256 || /[\r\n\0]/.test(password)) throw new Error('Password must contain 8-256 characters without newlines.');
 let env = existsSync('.env') ? readFileSync('.env', 'utf8') : readFileSync('.env.example', 'utf8');
 function set(name, value) {
-  const line = name + '=' + JSON.stringify(value);
+  // dotenv is not JSON: JSON backslash/quote escaping can change the password.
+  // Prefer literal single quotes, also preventing Compose $ interpolation.
+  const quoted = !value.includes("'") ? "'" + value + "'"
+    : !/["\\$]/.test(value) ? '"' + value + '"' : undefined;
+  if (quoted === undefined || parseEnv(name + '=' + quoted)[name] !== value) {
+    throw new Error('Cannot safely represent this password in both Node and Compose .env formats. Use a password without single quotes, or set ADMIN_PASSWORD directly in the server environment. No file was changed.');
+  }
+  const line = name + '=' + quoted;
   const pattern = new RegExp('^' + name + '=.*$', 'm');
   env = pattern.test(env) ? env.replace(pattern, () => line) : env.trimEnd() + '\n' + line + '\n';
 }
